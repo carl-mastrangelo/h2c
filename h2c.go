@@ -3,6 +3,8 @@ package h2c
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -66,6 +68,10 @@ func AttachClearTextHandler(h2s *http2.Server, s *http.Server) {
 }
 
 func (h *h2FowardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if up := r.Header.Get("Upgrade"); up == "h2c" {
+		w.WriteHeader(http.StatusSwitchingProtocols)
+		return
+	}
 	if r.Method == "PRI" && r.URL.String() == "*" && r.Proto == "HTTP/2.0" {
 		if hj, ok := w.(http.Hijacker); ok {
 			conn, rw, err := hj.Hijack()
@@ -81,4 +87,78 @@ func (h *h2FowardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.delegate.ServeHTTP(w, r)
+}
+
+type upgrader struct {
+	h1   http.RoundTripper
+	h2   http.RoundTripper
+	mu   *sync.Mutex
+	pref map[string]http.RoundTripper
+}
+
+func (u *upgrader) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := func() error {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		if u.pref[req.URL.Host] == nil {
+			upreq, err := http.NewRequest("OPTIONS", "*", nil)
+			if err != nil {
+				return err
+			}
+			upreq.URL.Scheme = req.URL.Scheme
+			upreq.URL.Host = req.URL.Host
+			upreq.URL.Path = req.URL.Path
+			upreq.Header.Add("Upgrade", "h2c")
+			upreq.Header.Add("Connection", "close") // don't risk the pooled connection living
+			upresp, err := u.h1.RoundTrip(upreq)
+			if err != nil {
+				return err
+			}
+			defer upresp.Body.Close()
+
+			// TODO: clear out u.pref once in a while
+			if upresp.StatusCode == http.StatusSwitchingProtocols {
+				u.pref[req.URL.Host] = u.h2
+			} else {
+				u.pref[req.URL.Host] = u.h1
+			}
+		}
+		return nil
+	}(); err != nil {
+		log.Println("uh oh", err)
+		return nil, err
+	}
+
+	u.mu.Lock()
+	rt := u.pref[req.URL.Host]
+	u.mu.Unlock()
+
+	return rt.RoundTrip(req)
+}
+
+func AttachClearTextUpgrade(c *http.Client) {
+	var h1 http.RoundTripper
+	if c.Transport != nil {
+		h1 = c.Transport
+	} else {
+		h1 = http.DefaultTransport
+	}
+
+	h2 := &http2.Transport{
+		AllowHTTP: true,
+		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+			ta, err := net.ResolveTCPAddr(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return net.DialTCP(network, nil, ta)
+		},
+	}
+
+	c.Transport = &upgrader{
+		h1:   h1,
+		h2:   h2,
+		mu:   new(sync.Mutex),
+		pref: make(map[string]http.RoundTripper),
+	}
 }

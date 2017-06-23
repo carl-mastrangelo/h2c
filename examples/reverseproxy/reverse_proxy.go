@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"time"
 
 	"golang.org/x/net/http2"
 
@@ -17,6 +18,7 @@ func main() {
 	go startBackendServer()
 
 	go startProxy()
+	time.Sleep(500 * time.Millisecond)
 
 	resp, err := http.Get("http://localhost:8800/")
 	if err != nil {

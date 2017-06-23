@@ -22,3 +22,12 @@ cleartext requests are rewritten to be handled by the given HTTP/2 Server.  For 
 	
 	s.ListenAndServe()
 ``` 
+
+For clients:
+
+```go
+	c := &http.Client{}
+	h2c.AttachClearTextUpgrade(c)
+
+	resp, err := c.Get("http://localhost:8080/")
+``` 

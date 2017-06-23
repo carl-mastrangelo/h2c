@@ -136,14 +136,7 @@ func (u *upgrader) RoundTrip(req *http.Request) (*http.Response, error) {
 	return rt.RoundTrip(req)
 }
 
-func AttachClearTextUpgrade(c *http.Client) {
-	var h1 http.RoundTripper
-	if c.Transport != nil {
-		h1 = c.Transport
-	} else {
-		h1 = http.DefaultTransport
-	}
-
+func NewClearTextTransport(h1Fallback http.RoundTripper) http.RoundTripper {
 	h2 := &http2.Transport{
 		AllowHTTP: true,
 		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
@@ -155,10 +148,21 @@ func AttachClearTextUpgrade(c *http.Client) {
 		},
 	}
 
-	c.Transport = &upgrader{
-		h1:   h1,
+	return &upgrader{
+		h1:   h1Fallback,
 		h2:   h2,
 		mu:   new(sync.Mutex),
 		pref: make(map[string]http.RoundTripper),
 	}
+}
+
+func AttachClearTextUpgrade(c *http.Client) {
+	var h1 http.RoundTripper
+	if c.Transport != nil {
+		h1 = c.Transport
+	} else {
+		h1 = http.DefaultTransport
+	}
+
+	c.Transport = NewClearTextTransport(h1)
 }
